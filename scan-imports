@@ -96,7 +96,11 @@ def main():
     sys.path.append(args.dir)
     by_sys_path: Dict[str, List[str]] = collections.defaultdict(list)
     for name in sorted(scanner.names):
-        spec = importlib.util.find_spec(name)
+        try:
+            spec = importlib.util.find_spec(name)
+        except ModuleNotFoundError:
+            log.warning("%s: module not found", name)
+            spec = None
         if spec is None or spec.origin is None:
             by_sys_path[""].append(name)
         else:
