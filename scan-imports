@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+
+import argparse
+import ast
+import logging
+import os
+import re
+import stat
+import sys
+from typing import TextIO, Set
+
+try:
+    import coloredlogs
+except ModuleNotFoundError:
+    coloredlogs = None
+
+log = logging.getLogger("scan-imports")
+
+re_python_shebang = re.compile(r"^#!.+python")
+
+
+def dirfd_open(fname: str, dir_fd: int):
+    return open(fname, "rt", opener=lambda path, flags: os.open(path, flags, dir_fd=dir_fd))
+
+
+class Scanner:
+    def __init__(self):
+        self.names: Set[str] = set()
+
+    def scan_dir(self, root: str):
+        for dirpath, dirnames, filenames, dir_fd in os.fwalk(root):
+            for fn in filenames:
+                if fn.endswith(".py"):
+                    with dirfd_open(fn, dir_fd=dir_fd) as fd:
+                        self.scan_file(fd, os.path.join(dirpath, fn))
+                st = os.stat(fn, dir_fd=dir_fd)
+                if st.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                    with dirfd_open(fn, dir_fd=dir_fd) as fd:
+                        try:
+                            lead = fd.readline()
+                        except UnicodeDecodeError:
+                            continue
+                        if re_python_shebang.match(lead):
+                            fd.seek(0)
+                            self.scan_file(fd, os.path.join(dirpath, fn))
+
+    def scan_file(self, fd: TextIO, pathname: str):
+        log.info("Reading file %s", pathname)
+        try:
+            tree = ast.parse(fd.read(), pathname)
+        except SyntaxError as e:
+            log.warning("%s: file cannot be parsed", pathname, exc_info=e)
+            return
+
+        self.scan_tree(tree)
+
+    def scan_tree(self, tree: ast.AST):
+        for stm in tree.body:
+            if isinstance(stm, ast.Import):
+                for alias in stm.names:
+                    if not isinstance(alias.name, str):
+                        print("NAME", repr(alias.name), stm)
+                    self.names.add(alias.name)
+            elif isinstance(stm, ast.ImportFrom):
+                if stm.module is not None:
+                    self.names.add(stm.module)
+            elif hasattr(stm, "body"):
+                self.scan_tree(stm)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="List imported modules for a directory of Python scripts")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
+    parser.add_argument("--debug", action="store_true", help="verbose output")
+    parser.add_argument("dir", nargs="?", default=".", action="store", help="directory with sources to scan")
+    args = parser.parse_args()
+
+    FORMAT = "%(asctime)-15s %(levelname)s %(name)s %(message)s"
+    if args.debug:
+        log_level = logging.DEBUG
+    elif args.verbose:
+        log_level = logging.INFO
+    else:
+        log_level = logging.WARN
+
+    if coloredlogs is not None:
+        coloredlogs.install(level=log_level, fmt=FORMAT, logger=log)
+    else:
+        logging.basicConfig(level=log_level, stream=sys.stderr, format=FORMAT)
+
+    scanner = Scanner()
+    scanner.scan_dir(args.dir)
+
+    for name in sorted(scanner.names):
+        print(name)
+
+
+if __name__ == "__main__":
+    main()
