@@ -2,12 +2,14 @@
 
 import argparse
 import ast
+import collections
+import importlib
 import logging
 import os
 import re
 import stat
 import sys
-from typing import TextIO, Set
+from typing import TextIO, Set, Dict, List
 
 try:
     import coloredlogs
@@ -91,8 +93,24 @@ def main():
     scanner = Scanner()
     scanner.scan_dir(args.dir)
 
+    sys.path.append(args.dir)
+    by_sys_path: Dict[str, List[str]] = collections.defaultdict(list)
     for name in sorted(scanner.names):
-        print(name)
+        spec = importlib.util.find_spec(name)
+        if spec is None or spec.origin is None:
+            by_sys_path[""].append(name)
+        else:
+            for sp in sys.path:
+                if spec.origin.startswith(sp):
+                    by_sys_path[sp].append(name)
+                    break
+            else:
+                by_sys_path[spec.origin].append(name)
+
+    for sys_path, names in sorted(by_sys_path.items()):
+        print(f"{sys_path or 'unidentified'}:")
+        for name in names:
+            print(f"  {name}")
 
 
 if __name__ == "__main__":
